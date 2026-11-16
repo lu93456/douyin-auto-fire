@@ -125,6 +125,10 @@ class DouyinChat:
                     break
             return titles
 
+        # The list may be scrolled to the bottom (e.g. right after
+        # discovery). Always restart from the top: this scan only moves
+        # downward, so a target above the current position is unreachable.
+        await self._scroll_list_to_top(row_selectors)
         # Give the list a moment to render before the first scan.
         await self.page.wait_for_timeout(1_000)
         stagnant = 0
@@ -144,6 +148,33 @@ class DouyinChat:
             await self._scroll_conversation_list(row_selectors)
             await self.page.wait_for_timeout(700)
         return await scan()
+
+    async def _scroll_list_to_top(self, row_selectors: tuple[str, ...]) -> None:
+        for selector in row_selectors:
+            rows = self.page.locator(selector)
+            try:
+                if not await rows.count():
+                    continue
+                done = await rows.first.evaluate(
+                    """el => {
+                        let node = el;
+                        while (node && node !== document.body) {
+                            const style = getComputedStyle(node);
+                            if ((style.overflowY === 'auto' || style.overflowY === 'scroll')
+                                && node.scrollHeight > node.clientHeight) {
+                                node.scrollTop = 0;
+                                return true;
+                            }
+                            node = node.parentElement;
+                        }
+                        return false;
+                    }"""
+                )
+                if done:
+                    break
+            except Exception:
+                continue
+        await self.page.wait_for_timeout(800)
 
     async def _scroll_conversation_list(self, row_selectors: tuple[str, ...]) -> None:
         # Scroll the list's scrollable ancestor via JS; fall back to a
