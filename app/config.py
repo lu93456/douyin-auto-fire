@@ -49,6 +49,10 @@ def load_task(settings: Settings) -> TaskConfig:
     if not isinstance(raw, dict):
         raise ConfigError("任务配置必须是 JSON 对象")
 
+    auto_discover = raw.get("auto_discover_spark_friends", False)
+    if not isinstance(auto_discover, bool):
+        raise ConfigError("auto_discover_spark_friends 必须是布尔值")
+    discovery_messages: tuple = ()
     targets_raw = raw.get("targets")
     if targets_raw is None and "friends" in raw:
         friends = raw.get("friends")
@@ -58,7 +62,18 @@ def load_task(settings: Settings) -> TaskConfig:
         if not isinstance(messages, list) or not messages:
             raise ConfigError("messages 必须是非空数组")
         targets_raw = [{"name": name, "messages": messages} for name in friends]
-    if not isinstance(targets_raw, list) or not targets_raw:
+    if targets_raw is None and auto_discover:
+        # 自动发现模式：目标在运行时从会话列表中发现（带火花的单聊好友），
+        # 配置只需提供统一的 messages，friends/targets 可以省略。
+        messages = raw.get("messages")
+        if not isinstance(messages, list) or not messages:
+            raise ConfigError("messages 必须是非空数组")
+        discovery_messages = tuple(
+            _parse_message(item, f"messages[{i}]", settings.task_config_path.parent)
+            for i, item in enumerate(messages)
+        )
+        targets_raw = []
+    if not isinstance(targets_raw, list) or (not targets_raw and not auto_discover):
         raise ConfigError("targets 必须是非空数组")
 
     targets = tuple(_parse_target(item, index, settings.task_config_path.parent) for index, item in enumerate(targets_raw))
@@ -96,6 +111,8 @@ def load_task(settings: Settings) -> TaskConfig:
         prevent_duplicates=raw.get("prevent_duplicates", False),
         target_open_retries=target_open_retries,
         target_open_timeout_seconds=target_open_timeout_seconds,
+        auto_discover_spark_friends=auto_discover,
+        discovery_messages=discovery_messages,
     )
     if not isinstance(task.continue_on_error, bool):
         raise ConfigError("continue_on_error 必须是布尔值")

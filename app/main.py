@@ -8,7 +8,7 @@ import random
 import re
 import hashlib
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -18,7 +18,7 @@ from app.douyin import DouyinChat, PageOperationError
 from app.errors import classify_error, get_retry_strategy, should_stop_all_tasks
 from app.history import AlreadyRunningError, History, run_lock
 from app.metrics import Metrics, HistoricalMetrics, format_metrics_summary
-from app.models import Settings, TargetResult
+from app.models import Settings, Target, TargetResult
 from app.notifier import send_dingtalk_notification, send_webhook_notification
 from app.privacy import RedactingFormatter, build_target_aliases, redact_text, target_alias
 from app.progress import create_single_run_progress
@@ -86,6 +86,32 @@ async def run(dry_run: bool = False, env_file: str | None = None) -> int:
             if fatal_error is None:
                 multi_stage.start_stage(2, total_items=len(task.targets))
                 chat = DouyinChat(page, timeout_ms=int(task.target_open_timeout_seconds * 1000))
+
+                if task.auto_discover_spark_friends:
+                    discovered_names: list[str] = []
+                    try:
+                        discovered_names = await chat.discover_spark_friends()
+                    except Exception as exc:
+                        LOGGER.exception("自动发现带火花好友失败")
+                        results.append(TargetResult(target="自动发现好友", status="failed", error=str(exc)))
+                        metrics.record_target_failure(type(exc).__name__)
+                        fatal_error = exc
+                    if discovered_names:
+                        task = replace(
+                            task,
+                            targets=tuple(
+                                Target(name=name, messages=task.discovery_messages)
+                                for name in discovered_names
+                            ),
+                        )
+                        aliases = build_target_aliases(task.targets)
+                        _configure_logging(settings.artifacts_dir, aliases)
+                        LOGGER.info("自动发现带火花好友 %d 位", len(task.targets))
+                    elif fatal_error is None:
+                        LOGGER.error("未发现带火花的单聊好友")
+                        results.append(TargetResult(target="自动发现好友", status="failed", error="未发现带火花的单聊好友"))
+                        metrics.record_target_failure("NoSparkFriends")
+                        fatal_error = PageOperationError("未发现带火花的单聊好友")
 
                 for index, target in enumerate(task.targets):
                     sent = 0

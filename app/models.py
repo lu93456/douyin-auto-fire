@@ -43,6 +43,8 @@ class TaskConfig:
     prevent_duplicates: bool
     target_open_retries: int = 1
     target_open_timeout_seconds: float = 15.0
+    auto_discover_spark_friends: bool = False
+    discovery_messages: tuple[Message, ...] = ()
 
 
 @dataclass(frozen=True)

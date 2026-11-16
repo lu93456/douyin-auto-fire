@@ -178,6 +178,82 @@ class DouyinChat:
         except Exception:
             pass
 
+    async def discover_spark_friends(self) -> list[str]:
+        # Local patch (lu93456 fork): collect every 1:1 conversation that
+        # carries a streak ("火花") badge, scanning the virtualized list
+        # page by page. A row counts when it has a streak container
+        # (commonStreak) AND a personal avatar (semi-avatar); group chats
+        # render a plain conversation icon instead of a personal avatar,
+        # so groups are excluded even when they carry a streak badge.
+        row_selectors = (
+            '[data-e2e="conversation-item"]',
+            '[class*="conversationConversationItem"]',
+            '[class*="conversation-item"]',
+            '[class*="ConversationItem"]',
+        )
+        title_selectors = (
+            '[class*="conversationConversationItemtitle"]',
+            '[class*="ConversationItemtitle"]',
+            '[class*="ConversationItemTitle"]',
+            '[class*="conversation-item-title"]',
+            '[class*="conversation-item-Title"]',
+        )
+
+        async def visible_rows() -> list[tuple[str, bool, bool]]:
+            for selector in row_selectors:
+                rows = self.page.locator(selector)
+                count = await rows.count()
+                if not count:
+                    continue
+                collected: list[tuple[str, bool, bool]] = []
+                for index in range(count):
+                    row = rows.nth(index)
+                    title = ""
+                    for title_selector in title_selectors:
+                        nodes = row.locator(title_selector)
+                        for node_index in range(await nodes.count()):
+                            try:
+                                text = (await nodes.nth(node_index).inner_text(timeout=300)).strip()
+                            except Exception:
+                                continue
+                            if text:
+                                title = text
+                                break
+                        if title:
+                            break
+                    if not title:
+                        continue
+                    try:
+                        has_streak = await row.locator('[class*="commonStreakstreakContainer"]').count() > 0
+                        is_person = await row.locator('[class*="semi-avatar"]').count() > 0
+                    except Exception:
+                        continue
+                    collected.append((title, is_person, has_streak))
+                if collected:
+                    return collected
+            return []
+
+        found: list[str] = []
+        await self.page.wait_for_timeout(1_000)
+        stagnant = 0
+        previous_titles: set[str] = set()
+        for _ in range(60):
+            rows_info = await visible_rows()
+            current_titles = {title for title, _, _ in rows_info}
+            for title, is_person, has_streak in rows_info:
+                if is_person and has_streak and title not in found:
+                    found.append(title)
+            if current_titles and current_titles == previous_titles:
+                stagnant += 1
+                if stagnant >= 3:
+                    break
+            else:
+                stagnant = 0
+                previous_titles = current_titles
+            await self._scroll_conversation_list(row_selectors)
+            await self.page.wait_for_timeout(700)
+        return found
+
     async def _search_result(self, name: str) -> Locator | None:
         # Search mode renders a separate SearchPanel. Its "发消息" action is the
         # correct control; clicking the hidden conversation cache does not mount
