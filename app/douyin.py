@@ -41,6 +41,17 @@ class DouyinChat:
         raise PageOperationError("打开聊天失败")
 
     async def _open_target_once(self, name: str) -> None:
+        # Local patch (lu93456 fork): try the conversation list first.
+        # Douyin web message search returns "未搜索到相关内容" even for
+        # friends who are plainly present in the conversation list, so the
+        # upstream search-first flow can never find anyone in that state.
+        # The list is virtualized, so scan it page by page while scrolling.
+        row = await self._list_result(name)
+        if row is not None:
+            await row.click(force=True)
+            await self._confirm_opened(name)
+            return
+
         search = await first_visible(self.page, SEARCH_INPUTS, self.timeout_ms)
         await search.click()
         await search.fill("")
@@ -52,6 +63,120 @@ class DouyinChat:
             raise PageOperationError("搜索不到目标好友")
         await result.click(force=True)
         await self._confirm_opened(name)
+
+    async def _list_result(self, name: str) -> Locator | None:
+        row_selectors = (
+            '[data-e2e="conversation-item"]',
+            '[class*="conversationConversationItem"]',
+            '[class*="conversation-item"]',
+            '[class*="ConversationItem"]',
+        )
+        title_selectors = (
+            '[class*="conversationConversationItemtitle"]',
+            '[class*="ConversationItemtitle"]',
+            '[class*="ConversationItemTitle"]',
+            '[class*="conversation-item-title"]',
+            '[class*="conversation-item-Title"]',
+        )
+
+        async def scan() -> Locator | None:
+            # Exact pass first, then the group-suffix pass (same priority
+            # rule as _search_result: an exact friend name always wins).
+            for selector in row_selectors:
+                rows = self.page.locator(selector)
+                for index in range(await rows.count()):
+                    row = rows.nth(index)
+                    if await _visible_exact_text_locator(row, title_selectors, name) is None:
+                        continue
+                    try:
+                        if await row.is_visible():
+                            return row
+                    except Exception:
+                        continue
+            for selector in row_selectors:
+                rows = self.page.locator(selector)
+                for index in range(await rows.count()):
+                    row = rows.nth(index)
+                    if await _visible_group_text_locator(row, title_selectors, name) is None:
+                        continue
+                    try:
+                        if await row.is_visible():
+                            return row
+                    except Exception:
+                        continue
+            return None
+
+        async def visible_titles() -> set[str]:
+            titles: set[str] = set()
+            for selector in row_selectors:
+                rows = self.page.locator(selector)
+                for index in range(await rows.count()):
+                    row = rows.nth(index)
+                    for title_selector in title_selectors:
+                        nodes = row.locator(title_selector)
+                        for node_index in range(await nodes.count()):
+                            try:
+                                text = (await nodes.nth(node_index).inner_text(timeout=300)).strip()
+                            except Exception:
+                                continue
+                            if text:
+                                titles.add(text)
+                if titles:
+                    break
+            return titles
+
+        # Give the list a moment to render before the first scan.
+        await self.page.wait_for_timeout(1_000)
+        stagnant = 0
+        previous_titles: set[str] = set()
+        for _ in range(40):
+            found = await scan()
+            if found is not None:
+                return found
+            titles = await visible_titles()
+            if titles and titles == previous_titles:
+                stagnant += 1
+                if stagnant >= 3:
+                    return None
+            else:
+                stagnant = 0
+                previous_titles = titles
+            await self._scroll_conversation_list(row_selectors)
+            await self.page.wait_for_timeout(700)
+        return await scan()
+
+    async def _scroll_conversation_list(self, row_selectors: tuple[str, ...]) -> None:
+        # Scroll the list's scrollable ancestor via JS; fall back to a
+        # mouse wheel over the left panel when no ancestor scrolls.
+        for selector in row_selectors:
+            rows = self.page.locator(selector)
+            try:
+                if not await rows.count():
+                    continue
+                scrolled = await rows.first.evaluate(
+                    """el => {
+                        let node = el;
+                        while (node && node !== document.body) {
+                            const style = getComputedStyle(node);
+                            if ((style.overflowY === 'auto' || style.overflowY === 'scroll')
+                                && node.scrollHeight > node.clientHeight) {
+                                node.scrollTop += Math.max(300, node.clientHeight * 0.8);
+                                return true;
+                            }
+                            node = node.parentElement;
+                        }
+                        return false;
+                    }"""
+                )
+                if scrolled:
+                    return
+            except Exception:
+                continue
+        try:
+            await self.page.mouse.move(180, 500)
+            await self.page.mouse.wheel(0, 700)
+        except Exception:
+            pass
 
     async def _search_result(self, name: str) -> Locator | None:
         # Search mode renders a separate SearchPanel. Its "发消息" action is the
