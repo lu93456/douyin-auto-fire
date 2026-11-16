@@ -80,16 +80,7 @@ class DouyinChat:
         )
 
         async def row_title(row: Locator) -> str:
-            for title_selector in title_selectors:
-                nodes = row.locator(title_selector)
-                for node_index in range(await nodes.count()):
-                    try:
-                        text = (await nodes.nth(node_index).inner_text(timeout=300)).strip()
-                    except Exception:
-                        continue
-                    if text:
-                        return text
-            return ""
+            return await _row_title_text(row, title_selectors)
 
         async def scan() -> Locator | None:
             # Match by title text only, exactly the way discovery reads
@@ -254,19 +245,7 @@ class DouyinChat:
                 collected: list[tuple[str, bool, bool]] = []
                 for index in range(count):
                     row = rows.nth(index)
-                    title = ""
-                    for title_selector in title_selectors:
-                        nodes = row.locator(title_selector)
-                        for node_index in range(await nodes.count()):
-                            try:
-                                text = (await nodes.nth(node_index).inner_text(timeout=300)).strip()
-                            except Exception:
-                                continue
-                            if text:
-                                title = text
-                                break
-                        if title:
-                            break
+                    title = await _row_title_text(row, title_selectors)
                     if not title:
                         continue
                     try:
@@ -519,6 +498,29 @@ class DouyinChat:
             except Exception:
                 continue
         return False
+
+
+async def _row_title_text(row: Locator, title_selectors: tuple[str, ...]) -> str:
+    """Extract a conversation row's title.
+
+    The substring title selectors match the title wrapper as well as the
+    title node itself, and the wrapper's inner_text appends the streak
+    badge and the time (e.g. "薛家帅 280 13:34"). Taking the first match
+    therefore poisons the name: it still matches the list (same source)
+    but never the chat header, which holds the bare name. The bare name
+    is the shortest candidate text, so keep the shortest non-empty one.
+    """
+    best = ""
+    for title_selector in title_selectors:
+        nodes = row.locator(title_selector)
+        for node_index in range(await nodes.count()):
+            try:
+                text = (await nodes.nth(node_index).inner_text(timeout=300)).strip()
+            except Exception:
+                continue
+            if text and (not best or len(text) < len(best)):
+                best = text
+    return best
 
 
 def _header_title_matches(title_text: str, name: str) -> bool:
