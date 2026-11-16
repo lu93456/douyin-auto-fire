@@ -79,31 +79,46 @@ class DouyinChat:
             '[class*="conversation-item-Title"]',
         )
 
+        async def row_title(row: Locator) -> str:
+            for title_selector in title_selectors:
+                nodes = row.locator(title_selector)
+                for node_index in range(await nodes.count()):
+                    try:
+                        text = (await nodes.nth(node_index).inner_text(timeout=300)).strip()
+                    except Exception:
+                        continue
+                    if text:
+                        return text
+            return ""
+
         async def scan() -> Locator | None:
+            # Match by title text only, exactly the way discovery reads
+            # the list. Playwright's is_visible() proved flaky on rows of
+            # this virtualized list (run 43885093533 found nobody in the
+            # list although discovery had just read all 10 names from
+            # it), so visibility is not part of the match; the click uses
+            # force=True and the header-title confirm guards the result.
             # Exact pass first, then the group-suffix pass (same priority
             # rule as _search_result: an exact friend name always wins).
             for selector in row_selectors:
                 rows = self.page.locator(selector)
-                for index in range(await rows.count()):
+                count = await rows.count()
+                for index in range(count):
                     row = rows.nth(index)
-                    if await _visible_exact_text_locator(row, title_selectors, name) is None:
-                        continue
-                    try:
-                        if await row.is_visible():
-                            return row
-                    except Exception:
-                        continue
+                    if await row_title(row) == name:
+                        return row
+                if count:
+                    break
             for selector in row_selectors:
                 rows = self.page.locator(selector)
-                for index in range(await rows.count()):
+                count = await rows.count()
+                for index in range(count):
                     row = rows.nth(index)
-                    if await _visible_group_text_locator(row, title_selectors, name) is None:
-                        continue
-                    try:
-                        if await row.is_visible():
-                            return row
-                    except Exception:
-                        continue
+                    title = await row_title(row)
+                    if title and _group_count_suffix_matches(title, name):
+                        return row
+                if count:
+                    break
             return None
 
         async def visible_titles() -> set[str]:
