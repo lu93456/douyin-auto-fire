@@ -399,15 +399,65 @@ class DouyinChat:
         return await first_visible(self.page, MESSAGE_INPUTS, self.timeout_ms)
 
     async def _confirm_opened(self, name: str, timeout_ms: int | None = None) -> None:
+        # Local patch (lu93456 fork): the upstream container-walking
+        # confirm failed on all 10 targets of run 43882164830 even though
+        # each correct chat was visibly open (see that run's failure
+        # screenshots). Read the header title node directly instead.
+        # The exact-class title node is unique to the open chat, so its
+        # text is authoritative even if Playwright's visibility heuristic
+        # misfires on it; a stale header would carry the previous chat's
+        # name, never the target's, so this cannot confirm a wrong person.
         timeout = timeout_ms if timeout_ms is not None else self.confirm_timeout_ms
         deadline = asyncio.get_running_loop().time() + timeout / 1000
+        last_title = ""
         while True:
-            last_error = await self._chat_open_error(name)
-            if last_error is None:
-                return
+            title = await self._read_open_chat_title()
+            if title:
+                last_title = title
+                if _header_title_matches(title, name):
+                    return
             if asyncio.get_running_loop().time() >= deadline:
-                raise last_error
+                break
             await self.page.wait_for_timeout(500)
+        composer_visible = await self._composer_visible()
+        raise PageOperationError(
+            "点击后无法确认聊天已打开"
+            f"（读到标题: {last_title or '无'}, 输入框: {'有' if composer_visible else '无'}）"
+        )
+
+    async def _read_open_chat_title(self) -> str:
+        # Pass 1: the exact header title node, no visibility requirement.
+        exact = self.page.locator('div[class="RightPanelHeadertitle"]')
+        try:
+            for index in range(await exact.count()):
+                text = (await exact.nth(index).inner_text(timeout=500)).strip()
+                if text:
+                    return text
+        except Exception:
+            pass
+        # Pass 2: broader title-ish nodes that are visible.
+        selectors = (
+            '[class*="RightPanelHeadertitle"]',
+            '[class*="chatHeadertitle"]',
+            '[class*="ChatHeadertitle"]',
+        )
+        for selector in selectors:
+            nodes = self.page.locator(selector)
+            try:
+                count = await nodes.count()
+            except Exception:
+                continue
+            for index in range(count):
+                node = nodes.nth(index)
+                try:
+                    if not await node.is_visible():
+                        continue
+                    text = (await node.inner_text(timeout=500)).strip()
+                except Exception:
+                    continue
+                if text:
+                    return text
+        return ""
 
     async def _chat_open_error(self, name: str) -> PageOperationError | None:
         # Confirm the right-side current chat by the authoritative chat title, which
@@ -454,6 +504,23 @@ class DouyinChat:
             except Exception:
                 continue
         return False
+
+
+def _header_title_matches(title_text: str, name: str) -> bool:
+    """True when a chat header title belongs to ``name``.
+
+    The title node itself holds the bare name; a wrapping container can
+    append the streak badge (e.g. "薛家帅 280" or "曹家昂 重燃中 1/3"),
+    so also accept the name as the first token with only a short badge
+    remainder.
+    """
+    if title_text == name:
+        return True
+    parts = title_text.replace("\n", " ").split()
+    if not parts or parts[0] != name:
+        return False
+    remainder = " ".join(parts[1:])
+    return 0 < len(remainder) <= 8
 
 
 async def _visible_exact_text_in(container: Locator, selectors: tuple[str, ...], expected: str) -> bool:
