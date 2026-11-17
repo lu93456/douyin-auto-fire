@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# douyin-auto-fire 服务器一键部署脚本 v2（阿里云 ECS / Alibaba Cloud Linux 3）
+# douyin-auto-fire 服务器一键部署脚本 v3（阿里云 ECS / Alibaba Cloud Linux 3）
 # 说明：该系统 dnf install docker 装的是 Podman（含 docker 兼容垫片），本脚本直接用 Podman。
 # 用法：在仓库解压目录里执行  bash deploy/server-setup.sh
 # 做什么：加 swap、配镜像源、构建带补丁的镜像、写好自动发现配置与快捷脚本。
@@ -87,7 +87,10 @@ fi
 chmod 600 "${INSTALL_DIR}/cookie.json" || true
 
 echo "==> [5/6] 构建镜像（pip 走阿里云镜像源加速；Chromium 下载需要几分钟）"
-sed '/^FROM /a ENV PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/' "${SRC}/Dockerfile" > "${SRC}/Dockerfile.local"
+# 在 FROM 之后注入两行：pip 镜像源 + 提前 apt 装 libatomic1
+# （Playwright 自带的 node 依赖 libatomic.so.1，基础镜像没有；
+#   不提前装，playwright install 会因 node 起不来而失败）
+awk '{print} /^FROM /{print "ENV PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/"; print "RUN apt-get update && apt-get install -y --no-install-recommends libatomic1 cron tzdata && rm -rf /var/lib/apt/lists/*"}' "${SRC}/Dockerfile" > "${SRC}/Dockerfile.local"
 podman build --network=host -f "${SRC}/Dockerfile.local" -t "${IMAGE}" "${SRC}"
 
 echo "==> [6/6] 生成快捷脚本"
