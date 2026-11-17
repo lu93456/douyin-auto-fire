@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# douyin-auto-fire 服务器一键部署脚本（阿里云 ECS / Alibaba Cloud Linux 3）
+# douyin-auto-fire 服务器一键部署脚本 v2（阿里云 ECS / Alibaba Cloud Linux 3）
+# 说明：该系统 dnf install docker 装的是 Podman（含 docker 兼容垫片），本脚本直接用 Podman。
 # 用法：在仓库解压目录里执行  bash deploy/server-setup.sh
-# 做什么：加 swap、装 Docker、配国内镜像源、构建带补丁的镜像、写好自动发现配置。
+# 做什么：加 swap、配镜像源、构建带补丁的镜像、写好自动发现配置与快捷脚本。
 # 不做什么：不碰 Cookie（cookie.json 由用户本人粘贴），不启动每日任务（验证通过后再启动）。
 set -euo pipefail
 
@@ -24,41 +25,30 @@ else
   echo "    已有 swap，跳过"
 fi
 
-echo "==> [2/6] 安装 Docker"
-if ! command -v docker >/dev/null 2>&1; then
-  dnf install -y docker || true
+echo "==> [2/6] 检查 Podman"
+if ! command -v podman >/dev/null 2>&1; then
+  dnf install -y podman
 fi
-if ! command -v docker >/dev/null 2>&1; then
-  cat > /etc/yum.repos.d/docker-ce.repo <<'EOF'
-[docker-ce-stable]
-name=Docker CE Stable
-baseurl=https://mirrors.aliyun.com/docker-ce/linux/centos/9/$basearch/stable
-enabled=1
-gpgcheck=1
-gpgkey=https://mirrors.aliyun.com/docker-ce/linux/centos/gpg
-EOF
-  dnf install -y docker-ce docker-ce-cli containerd.io || true
-fi
-if ! command -v docker >/dev/null 2>&1; then
-  curl -fsSL https://get.docker.com | sh
-fi
-systemctl enable --now docker
-echo "    Docker: $(docker --version)"
+echo "    Podman: $(podman --version)"
+# 容器开机自启恢复（配合 --restart 策略）
+systemctl enable podman-restart.service >/dev/null 2>&1 || true
 
 echo "==> [3/6] 配置镜像加速（拉 python 基础镜像用）"
-if [ ! -f /etc/docker/daemon.json ]; then
-  cat > /etc/docker/daemon.json <<'EOF'
-{
-  "registry-mirrors": [
-    "https://docker.m.daocloud.io",
-    "https://docker.1panel.live"
-  ]
-}
+MIRROR_CONF=/etc/containers/registries.conf.d/99-mirror.conf
+if [ ! -f "${MIRROR_CONF}" ]; then
+  mkdir -p /etc/containers/registries.conf.d
+  cat > "${MIRROR_CONF}" <<'EOF'
+[[registry]]
+prefix = "docker.io"
+location = "docker.io"
+[[registry.mirror]]
+location = "docker.m.daocloud.io"
+[[registry.mirror]]
+location = "docker.1panel.live"
 EOF
-  systemctl restart docker
-  echo "    已写入 /etc/docker/daemon.json"
+  echo "    已写入 ${MIRROR_CONF}"
 else
-  echo "    daemon.json 已存在，跳过"
+  echo "    镜像配置已存在，跳过"
 fi
 
 echo "==> [4/6] 准备源码与配置"
@@ -98,13 +88,13 @@ chmod 600 "${INSTALL_DIR}/cookie.json" || true
 
 echo "==> [5/6] 构建镜像（pip 走阿里云镜像源加速；Chromium 下载需要几分钟）"
 sed '/^FROM /a ENV PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/' "${SRC}/Dockerfile" > "${SRC}/Dockerfile.local"
-docker build -f "${SRC}/Dockerfile.local" -t "${IMAGE}" "${SRC}"
+podman build --network=host -f "${SRC}/Dockerfile.local" -t "${IMAGE}" "${SRC}"
 
 echo "==> [6/6] 生成快捷脚本"
 cat > "${INSTALL_DIR}/run-once.sh" <<EOF
 #!/usr/bin/env bash
 # 手动跑一次：bash run-once.sh --dry-run  （只验证不发送） 或  bash run-once.sh（真实发送）
-exec docker run --rm --entrypoint python \\
+exec podman run --rm --entrypoint python \\
   -e HEADLESS=true \\
   -e DOUYIN_COOKIE=/data/cookie.json \\
   -e TASK_CONFIG=/app/config.json \\
@@ -119,8 +109,8 @@ chmod +x "${INSTALL_DIR}/run-once.sh"
 cat > "${INSTALL_DIR}/start.sh" <<EOF
 #!/usr/bin/env bash
 # 启动每日自动续火花（每天 21:05，容器内 cron）；重复执行会先删旧容器
-docker rm -f douyin-auto-fire >/dev/null 2>&1 || true
-docker run -d --name douyin-auto-fire --restart unless-stopped \\
+podman rm -f douyin-auto-fire >/dev/null 2>&1 || true
+podman run -d --name douyin-auto-fire --restart unless-stopped \\
   -e TZ=Asia/Shanghai \\
   -e CRON_SCHEDULE="5 21 * * *" \\
   -e RUN_ON_START=false \\
@@ -132,7 +122,7 @@ docker run -d --name douyin-auto-fire --restart unless-stopped \\
   -v ${INSTALL_DIR}/cookie.json:/data/cookie.json:ro \\
   -v ${INSTALL_DIR}/artifacts:/app/artifacts \\
   ${IMAGE}
-echo "已启动。查看日志: docker logs -f douyin-auto-fire"
+echo "已启动。查看日志: podman logs -f douyin-auto-fire"
 EOF
 chmod +x "${INSTALL_DIR}/start.sh"
 
