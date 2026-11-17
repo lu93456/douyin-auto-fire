@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# douyin-auto-fire 服务器一键部署脚本 v4（阿里云 ECS / Alibaba Cloud Linux 3）
+# douyin-auto-fire 服务器一键部署脚本 v5（阿里云 ECS / Alibaba Cloud Linux 3）
 # 说明：该系统 dnf install docker 装的是 Podman（含 docker 兼容垫片），本脚本直接用 Podman。
-# v4 变更：构建改走国内镜像——Debian apt 源换阿里云、pip 走阿里云、Playwright/Chromium 走 npmmirror，
-# 不再从 deb.debian.org / 微软 CDN 慢慢拉（v3 在北京机器上慢到数小时）。
+# v5 变更：apt 与 pip 改走清华 TUNA 镜像（v4 的阿里云源在该机实测仅约 40 kB/s）；
+# Playwright/Chromium 仍走 npmmirror。
 # 用法：在仓库解压目录里执行  bash deploy/server-setup.sh
 # 做什么：加 swap、配镜像源、构建带补丁的镜像、写好自动发现配置与快捷脚本。
 # 不做什么：不碰 Cookie（cookie.json 由用户本人粘贴），不启动每日任务（验证通过后再启动）。
@@ -88,14 +88,14 @@ if [ ! -f "${INSTALL_DIR}/cookie.json" ]; then
 fi
 chmod 600 "${INSTALL_DIR}/cookie.json" || true
 
-echo "==> [5/6] 构建镜像（apt/pip/Chromium 全部走国内镜像）"
+echo "==> [5/6] 构建镜像（apt/pip 走清华源，Chromium 走 npmmirror）"
 # 在 FROM 之后注入四行：
-# 1) Debian apt 源换阿里云镜像（bookworm 的源文件是 debian.sources，老格式是 sources.list，两个都处理）
-# 2) pip 走阿里云镜像
+# 1) Debian apt 源换清华 TUNA 镜像（bookworm 的源文件是 debian.sources，老格式是 sources.list，两个都处理）
+# 2) pip 走清华 TUNA 镜像
 # 3) Playwright/Chromium 下载走 npmmirror（默认微软 CDN 在国内极慢）
 # 4) 提前 apt 装 libatomic1（Playwright 自带的 node 依赖 libatomic.so.1，基础镜像没有；
 #    不提前装，playwright install 会因 node 起不来而失败）
-awk '{print} /^FROM /{print "RUN sed -i '"'"'s|deb.debian.org|mirrors.aliyun.com|g; s|security.debian.org|mirrors.aliyun.com|g'"'"' /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list 2>/dev/null || true"; print "ENV PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/"; print "ENV PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright"; print "RUN apt-get update && apt-get install -y --no-install-recommends libatomic1 cron tzdata && rm -rf /var/lib/apt/lists/*"}' "${SRC}/Dockerfile" > "${SRC}/Dockerfile.local"
+awk '{print} /^FROM /{print "RUN sed -i '"'"'s|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g; s|security.debian.org|mirrors.tuna.tsinghua.edu.cn|g'"'"' /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list 2>/dev/null || true"; print "ENV PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple"; print "ENV PLAYWRIGHT_DOWNLOAD_HOST=https://npmmirror.com/mirrors/playwright"; print "RUN apt-get update && apt-get install -y --no-install-recommends libatomic1 cron tzdata && rm -rf /var/lib/apt/lists/*"}' "${SRC}/Dockerfile" > "${SRC}/Dockerfile.local"
 podman build --network=host -f "${SRC}/Dockerfile.local" -t "${IMAGE}" "${SRC}"
 
 echo "==> [6/6] 生成快捷脚本"
